@@ -1,0 +1,42 @@
+exports.getOpeningStocks = async function getOpeningStocks(db, outletName, beforeDateISO) {
+  const outletStockCollection = db.collection("outlet_stock");
+  const stock_transactions    = db.collection("stock_transactions");
+
+  // 1 – fixed opening stock values saved in outlet_stock
+  const fixedStocks = await outletStockCollection.find({}).toArray();
+  const fixedMap = fixedStocks.reduce((acc, s) => {
+    acc[s.barcode] = s.outlet_stocks[outletName] || {
+      openingStock: 0,
+      openingStockValueDP: 0,
+      openingStockValueTP: 0,
+    };
+    return acc;
+  }, {});
+
+  // 2 – all transactions for that outlet before the date
+  const tx = await stock_transactions
+    .find({ outlet: outletName, date: { $lt: beforeDateISO } })
+    .toArray();
+
+  const delta = {}; // { barcode : { qty, valueDP, valueTP } }
+  for (const t of tx) {
+    const b = t.barcode;
+    if (!delta[b]) delta[b] = { qty: 0, valueDP: 0, valueTP: 0 };
+    const m = ["primary", "market return"].includes(t.type.toLowerCase()) ? 1 : -1;
+    delta[b].qty     += m * t.quantity;
+    delta[b].valueDP += m * t.quantity * t.dp;
+    delta[b].valueTP += m * t.quantity * t.tp;
+  }
+
+  // 3 – combine fixed opening + net changes
+  return Object.keys(fixedMap).map((barcode) => {
+    const base  = fixedMap[barcode];
+    const change = delta[barcode] || { qty: 0, valueDP: 0, valueTP: 0 };
+    return {
+      barcode,
+      openingStock     : base.openingStock + change.qty,
+      openingValueDP   : base.openingStockValueDP + change.valueDP,
+      openingValueTP   : base.openingStockValueTP + change.valueTP,
+    };
+  });
+};
